@@ -1,51 +1,51 @@
-import javax.swing.*;
-import javax.vecmath.*;
-import javax.media.j3d.*;
 import java.awt.*;
 import java.awt.event.*;
+import javax.media.j3d.*;
+import javax.swing.*;
+import javax.vecmath.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class CameraController {
-    private final Scene3D scene3D;
-    private final ConfigPanel configPanel;
-    private final Robot robot;
+    private final TransformGroup cameraTransformGroup;
+    private final Transform3D cameraTransform;
+    private final AppWindow appWindow;
+
+    private float speedMultiplier = 1.0f; // Multiplicateur de vitesse
+    private float baseSpeed = 0.05f; // Vitesse de base
+    private float cameraSensitivity = 0.005f; // Sensibilité de la souris
+
+    private final Vector3f cameraPosition = new Vector3f(0, 2, 10);
+    private float yaw = 0f; // Rotation autour de Y
+    private float pitch = 0f; // Rotation autour de X
+
     private final ConcurrentHashMap<Integer, Boolean> keysPressed = new ConcurrentHashMap<>();
-    private float speedMultiplier = 1.0f;
-    private final float baseSpeed = 0.05f;
-    private int lastMouseX, lastMouseY;
     private boolean isDragging = false;
+    private int lastMouseX, lastMouseY;
+    private Dimension screenSize;
 
-    // Angles pour maintenir la rotation de la caméra
-    private float cameraPitch = 0.0f; // Rotation autour de l'axe X (haut-bas)
-    private float cameraYaw = 0.0f;   // Rotation autour de l'axe Y (gauche-droite)
+    public CameraController(Scene3D scene3D, TransformGroup cameraTransformGroup, AppWindow appWindow) {
+        this.cameraTransformGroup = cameraTransformGroup;
+        this.cameraTransform = new Transform3D();
+        this.appWindow = appWindow;
 
-    public CameraController(Scene3D scene3D, ConfigPanel configPanel) {
-        this.scene3D = scene3D;
-        this.configPanel = configPanel;
+        // Obtenir les dimensions de l'écran
+        screenSize = Toolkit.getDefaultToolkit().getScreenSize();
 
-        try {
-            robot = new Robot();
-        } catch (AWTException e) {
-            throw new RuntimeException("Failed to initialize robot for mouse control", e);
-        }
-
-        initializeMouseListeners();
-        initializeKeyboardListeners();
-        startAnimationLoop();
+        initializeInputListeners(scene3D.getCanvas());
+        updateCameraTransform();
     }
 
-    private void initializeMouseListeners() {
-        Canvas3D canvas = scene3D.getCanvas();
-
-        // Gestion de la molette pour ajuster la vitesse
-        canvas.addMouseWheelListener(e -> {
-            int notches = e.getWheelRotation();
-            if (notches < 0) { // Molette vers le haut
-                speedMultiplier = Math.min(speedMultiplier + 0.1f, 10.0f);
-            } else { // Molette vers le bas
-                speedMultiplier = Math.max(speedMultiplier - 0.1f, 0.1f);
+    private void initializeInputListeners(Canvas3D canvas) {
+        canvas.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                keysPressed.put(e.getKeyCode(), true);
             }
-            configPanel.updateSpeedDisplay(speedMultiplier);
+
+            @Override
+            public void keyReleased(KeyEvent e) {
+                keysPressed.remove(e.getKeyCode());
+            }
         });
 
         canvas.addMouseListener(new MouseAdapter() {
@@ -70,122 +70,116 @@ public class CameraController {
             @Override
             public void mouseDragged(MouseEvent e) {
                 if (isDragging) {
-                    int currentMouseX = e.getXOnScreen();
-                    int currentMouseY = e.getYOnScreen();
+                    try {
+                        Robot robot = new Robot();
 
-                    int deltaX = currentMouseX - lastMouseX;
-                    int deltaY = currentMouseY - lastMouseY;
+                        int currentMouseX = e.getXOnScreen();
+                        int currentMouseY = e.getYOnScreen();
 
-                    // Gestion des bordures de l'écran
-                    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-                    if (currentMouseX <= 0) {
-                        robot.mouseMove(screenSize.width - 2, currentMouseY);
-                        currentMouseX = screenSize.width - 2;
-                    } else if (currentMouseX >= screenSize.width - 1) {
-                        robot.mouseMove(1, currentMouseY);
-                        currentMouseX = 1;
+                        int deltaX = currentMouseX - lastMouseX;
+                        int deltaY = currentMouseY - lastMouseY;
+
+                        yaw += -deltaX * cameraSensitivity; // Rotation horizontale
+                        pitch += -deltaY * cameraSensitivity; // Rotation verticale
+
+                        pitch = (float) Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch)); // Limiter la rotation verticale
+                        updateCameraTransform();
+
+                        // Vérifier si la souris atteint un bord et la téléporter
+                        if (currentMouseX <= 0) {
+                            robot.mouseMove(screenSize.width - 2, currentMouseY);
+                            lastMouseX = screenSize.width - 2;
+                        } else if (currentMouseX >= screenSize.width - 1) {
+                            robot.mouseMove(1, currentMouseY);
+                            lastMouseX = 1;
+                        } else {
+                            lastMouseX = currentMouseX;
+                        }
+
+                        if (currentMouseY <= 0) {
+                            robot.mouseMove(currentMouseX, screenSize.height - 2);
+                            lastMouseY = screenSize.height - 2;
+                        } else if (currentMouseY >= screenSize.height - 1) {
+                            robot.mouseMove(currentMouseX, 1);
+                            lastMouseY = 1;
+                        } else {
+                            lastMouseY = currentMouseY;
+                        }
+                    } catch (AWTException ex) {
+                        ex.printStackTrace();
                     }
-
-                    if (currentMouseY <= 0) {
-                        robot.mouseMove(currentMouseX, screenSize.height - 2);
-                        currentMouseY = screenSize.height - 2;
-                    } else if (currentMouseY >= screenSize.height - 1) {
-                        robot.mouseMove(currentMouseX, 1);
-                        currentMouseY = 1;
-                    }
-
-                    // Mise à jour des angles de rotation
-                    float sensitivity = 0.2f; // Sensibilité de la rotation
-                    cameraYaw -= deltaX * sensitivity * 0.01f;
-                    cameraPitch = Math.max(-90, Math.min(90, cameraPitch - deltaY * sensitivity * 0.01f)); // Limiter le pitch
-
-                    updateCameraRotation();
-
-                    lastMouseX = currentMouseX;
-                    lastMouseY = currentMouseY;
                 }
             }
         });
-    }
 
-    private void initializeKeyboardListeners() {
-        Canvas3D canvas = scene3D.getCanvas();
-
-        canvas.addKeyListener(new KeyAdapter() {
-            @Override
-            public void keyPressed(KeyEvent e) {
-                keysPressed.put(e.getKeyCode(), true);
+        canvas.addMouseWheelListener(e -> {
+            int notches = e.getWheelRotation();
+            if (notches < 0) { // Molette vers le haut
+                speedMultiplier = Math.min(speedMultiplier + 0.1f, 10.0f);
+            } else if (notches > 0) { // Molette vers le bas
+                speedMultiplier = Math.max(0.1f, speedMultiplier - 0.1f);
             }
-
-            @Override
-            public void keyReleased(KeyEvent e) {
-                keysPressed.remove(e.getKeyCode());
-            }
+            appWindow.updateCameraSpeedLabel(speedMultiplier);
         });
     }
 
-    private void startAnimationLoop() {
-        new Thread(() -> {
-            while (true) {
-                Vector3f movement = new Vector3f();
-                float currentSpeed = baseSpeed * speedMultiplier;
+    public void update() {
+        Vector3f movement = new Vector3f();
 
-                if (keysPressed.getOrDefault(KeyEvent.VK_Z, false)) {
-                    movement.z -= currentSpeed; // Avancer
-                }
-                if (keysPressed.getOrDefault(KeyEvent.VK_S, false)) {
-                    movement.z += currentSpeed; // Reculer
-                }
-                if (keysPressed.getOrDefault(KeyEvent.VK_Q, false)) {
-                    movement.x -= currentSpeed; // Aller à gauche
-                }
-                if (keysPressed.getOrDefault(KeyEvent.VK_D, false)) {
-                    movement.x += currentSpeed; // Aller à droite
-                }
+        if (keysPressed.getOrDefault(KeyEvent.VK_Z, false)) { // Avancer
+            movement.z -= baseSpeed * speedMultiplier;
+        }
+        if (keysPressed.getOrDefault(KeyEvent.VK_S, false)) { // Reculer
+            movement.z += baseSpeed * speedMultiplier;
+        }
+        if (keysPressed.getOrDefault(KeyEvent.VK_Q, false)) { // Gauche
+            movement.x -= baseSpeed * speedMultiplier;
+        }
+        if (keysPressed.getOrDefault(KeyEvent.VK_D, false)) { // Droite
+            movement.x += baseSpeed * speedMultiplier;
+        }
 
-                // Appliquer la rotation et la translation
-                Transform3D movementTransform = new Transform3D();
-                movementTransform.setTranslation(movement);
-
-                Transform3D rotatedMovement = new Transform3D();
-                rotatedMovement.mul(scene3D.getCameraRotation(), movementTransform);
-
-                Vector3f translatedMovement = new Vector3f();
-                rotatedMovement.get(translatedMovement);
-                scene3D.getCameraTranslation().add(translatedMovement);
-
-                updateCamera();
-
-                // Boucle à 240 FPS
-                try {
-                    Thread.sleep(1000 / 240);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }).start();
+        applyRelativeMovement(movement);
     }
 
-    private void updateCameraRotation() {
-        // Réinitialiser la rotation
-        Transform3D yawRotation = new Transform3D();
-        Transform3D pitchRotation = new Transform3D();
+    private void applyRelativeMovement(Vector3f movement) {
+        Transform3D rotationTransform = new Transform3D();
+        rotationTransform.rotY(yaw); // Rotation horizontale
+        Transform3D pitchTransform = new Transform3D();
+        pitchTransform.rotX(pitch); // Rotation verticale
+        rotationTransform.mul(pitchTransform); // Combiner les deux rotations
 
-        yawRotation.rotY(cameraYaw);
-        pitchRotation.rotX(cameraPitch);
+        Transform3D movementTransform = new Transform3D();
+        movementTransform.setTranslation(movement);
+
+        Transform3D combinedTransform = new Transform3D();
+        combinedTransform.mul(rotationTransform, movementTransform);
+
+        Vector3f transformedMovement = new Vector3f();
+        combinedTransform.get(transformedMovement);
+
+        cameraPosition.add(transformedMovement);
+        updateCameraTransform();
+    }
+
+    private void updateCameraTransform() {
+        Transform3D rotationY = new Transform3D();
+        Transform3D rotationX = new Transform3D();
+
+        rotationY.rotY(yaw); // Rotation autour de l'axe Y
+        rotationX.rotX(pitch); // Rotation autour de l'axe X
 
         Transform3D combinedRotation = new Transform3D();
-        combinedRotation.mul(yawRotation);
-        combinedRotation.mul(pitchRotation);
+        combinedRotation.mul(rotationY);
+        combinedRotation.mul(rotationX);
 
-        scene3D.getCameraRotation().set(combinedRotation);
+        combinedRotation.setTranslation(cameraPosition);
 
-        updateCamera();
+        // Appliquer la transformation finale au groupe de transformation de la caméra
+        cameraTransformGroup.setTransform(combinedRotation);
     }
 
-    private void updateCamera() {
-        Transform3D combinedTransform = new Transform3D(scene3D.getCameraRotation());
-        combinedTransform.setTranslation(scene3D.getCameraTranslation());
-        scene3D.getViewTransform().setTransform(combinedTransform);
+    public float getSpeedMultiplier() {
+        return speedMultiplier;
     }
 }
